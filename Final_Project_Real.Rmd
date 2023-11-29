@@ -1,0 +1,498 @@
+---
+title: "STA 518 Final Project"
+author: "Russell Marvin"
+date: '`r Sys.Date()`'
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Loading packages, data, cleaning and exploring
+
+## Loading Packages
+
+```{r loading packages}
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(skimr)
+library(readr)
+library(rnoaa)
+library(broom)
+library(stringr)
+```
+
+## Importing data
+
+```{r loading data}
+#GHG emissions for 194 countries and EU from 1990-2018, including emissions of 6 major GHGs. Non-CO2 emissions are expressed in CO2 equivalents using 100-year global warming potential values from IPCC Fourth Assessment Report:
+ghg_emissions <- read_csv("ghg-emissions.csv")
+#Global mean CO2 dry air mole fraction defined as the num of molecules CO2/num all molecules in air WITHOUT WATER VAPOR. (expressed as ppm so .000400 = 400ppm). Data averages from marine surface sites around the globe:
+CO2_annual_mean <- read_csv("CO2AnnualMean-glo.csv")
+#Global mean sea level absolute change in mm:
+sea_level_mean <- read_csv("GlobalMeanSeaLevel93-14.csv")
+#Average global mean temperature anomalies in degrees Celsius relative to a base period. GISTEMP base period: 1951-1980. GISS Surface Temp Analysis. GCAG base period: 20th century average.:
+mean_temp_anom <- read_csv("GlobalMeanTempAnomolies1880-2016.csv")
+#Area and extent of sea ice from NOAA
+#Area defined as area 100% covered by sea ice, extent defined as area at least 15% covered by sea ice
+sea_ice <- sea_ice_tabular()
+```
+
+
+## let's tidy up and look at our data
+
+```{r}
+#starting with ghg_emissions, we want one row for each year, plus add a "sum" column including all countries' totals
+
+#first step is to remove 1990 (it includes several 'false' values), the 'unit' column, and the 'data source' row (full of NAs)
+ghg_emissions_2 <- ghg_emissions %>% select(-('unit':'1990')) %>% na.omit()
+#next, we pivot_longer to give all country years (eg. China 1995) a row, then use group_by and summarize to create a 'CO2_total' for each year
+ghg_emissions_tidy <- ghg_emissions_2 %>% pivot_longer(c('1991':'2018'), names_to = "year", values_to = "MtCO2e") %>% group_by(year) %>% summarize(MtCO2e_total = sum(MtCO2e))
+glimpse(ghg_emissions_tidy)
+skim(ghg_emissions_tidy)
+
+#now on to CO2_annual_mean, 
+#for now we will leave the uncertainty column, though it's the same for every observation
+#Since we only have one observation per year, let's create a Year column with just the Year
+CO2_annual_mean <- CO2_annual_mean %>% mutate(YearOnly = year(Year))
+glimpse(CO2_annual_mean)
+skim(CO2_annual_mean)
+#next is sea_level_mean, which looks good as well, tidy already. 
+glimpse(sea_level_mean)
+skim(sea_level_mean)
+#For mean_temp_anom, we'll take out one measurement of temp but leave all the many observations for now
+mean_temp_anom_tidy <- mean_temp_anom %>% filter(Source == "GISTEMP")
+glimpse(mean_temp_anom_tidy)
+skim(mean_temp_anom_tidy)
+#lastly, we have sea_ice. First let's remove NA observations (represented as -9999). Then we'll look at it
+sea_ice_tidy <- sea_ice %>% filter(data.type != "-9999", extent != -9999.00, area != -9999.00)
+#let's also change the N/S to North/South to make the region column more clear to interpret
+sea_ice_tidy <- sea_ice_tidy %>% mutate(region_full = str_replace_all(region, pattern = c(N = "North", S = "South"))) %>% select(-region)
+glimpse(sea_ice_tidy)
+skim(sea_ice_tidy)
+```
+
+Thankfully we're now working with data that does no have any missing values. 
+
+## Some EDA
+
+Let's check out how the data.type variable related with the region variable. 
+
+```{r}
+#frequency table using https://www.statology.org/two-way-table-in-r/ 
+sea_ice_freq_table <- table(sea_ice_tidy$region_full, sea_ice_tidy$data.type)
+sea_ice_freq_table
+```
+There was roughly the same number of each type of observation per region, with one extra Goddard data.type measurement in the Southern region.
+
+# Visualizations
+
+We will first calculate and plot mean area and extent of sea ice measurements for each year to look at trends.
+
+```{r}
+#let's calculate mean area and extent for each year to look at yearly trends!
+sea_ice_yearly_means <- sea_ice_tidy %>% group_by(year) %>% summarize(extent_mean = mean(extent), area_mean = mean(area)) 
+
+#now to plot each of them
+sea_ice_yearly_means %>% ggplot(aes(x= year,
+                             y= extent_mean))+
+  geom_line(color = "dodgerblue") + 
+  labs(title = "Mean area at least 15% by sea ice by year (aka Extent)",
+       y = "10^6 km^2 at least 15% covered by sea ice",
+       caption = "Data source: NOAA")+
+  theme_bw()
+
+sea_ice_yearly_means %>% ggplot(aes(x= year,
+                             y= area_mean))+
+  geom_line(color = "red") + 
+  labs(title = "Mean area 100% covered by sea ice by year (aka Area)",
+       y = "10^6 km^2 100% covered by sea ice",
+       caption = "Data source: NOAA") + 
+  theme_bw()
+```
+
+Extent seems to have a clearer downward trend, though both do decrease over time. 
+
+How about our mean_temp_anom_tidy over time?
+
+```{r}
+#how about our mean_temp_anom_tidy over time?
+mean_temp_anom_tidy %>% ggplot(aes(x= Year,
+                             y= Mean))+
+  geom_line(color = "green") + 
+  geom_hline(yintercept = 0) +
+  labs(title = "Mean temp anomoly by year, relative to 1951-1980",
+       y = "Mean temp anomoly (Celsius)",
+       caption = "Data source: GISTemp - Goddard Institute for Space Studies Surface Temp Analysis") + 
+  theme_bw()
+```
+
+A clear increase over the baseline period, with a particular spike around the 2010-2020 time period. 
+
+How does our CO2 measurement change over time?
+
+```{r}
+CO2_annual_mean %>% ggplot(aes(x= Year,
+                             y= Mean))+
+  geom_line(color = "orange") +
+  labs(title = "Global mean CO2 dry air mole fraction defined as 
+       the number of molecules CO2/num all molecules in air w/o water vapor ",
+       y = "CO2 dry air mole fraction (ppm)",
+       caption = "Data Source: Trends in Atmospheric Carbon Dioxide, Global. 
+       Ed Dlugokencky and Pieter Tans, NOAA/ESRL (www.esrl.noaa.gov/gmd/ccgg/trends/)") + 
+  theme_bw()
+
+```
+
+CO2 levels in the atmosphere can be seen increasing over the last 30 years.
+
+Let's take a look at sea_level_mean, or absolute change in sea level since the beginning of the first year measured. 
+```{r}
+sea_level_mean %>% ggplot(aes(x= Time,
+                             y= GMSL))+
+  geom_line(color = "purple") + 
+  geom_hline(yintercept = 0) +
+  labs(title = "Global mean sea level absolute change (mm) since 1993",
+       x = "Year",
+       y = "Absolute change in sea level (mm) since 1993",
+       caption = "Data source: EPA and CSIRO (Commonwealth Scientific and Industrial Research Organization)") + 
+  theme_bw()
+```
+
+And finally our greenhouse gas measurements (expressed as metric tons of CO2 equivalents, based on the global warming potential of each gas included).
+
+```{r}
+#first we have to coerce our year variable to numeric, as opposed to character
+ghg_emissions_tidy$year <- as.numeric(ghg_emissions_tidy$year)
+
+ghg_emissions_tidy %>% ggplot(aes(x= year,
+                             y= MtCO2e_total))+
+  geom_line(color = "red") +
+  labs(title = "CO2 equivalent emissions from all tracked countries by year",
+      y = "Metric tons Carbon Dioxide equivalent",
+       caption = "Data Source: Climate Watch Historical GHG Emissions. 2021. 
+       Washington, DC: World Resources Institute. (Available online at: 
+       https://www.climatewatchdata.org/ghg-emissions)") + 
+  theme_bw()
+```
+
+A clear increase in yearly MtCO2 equivalent emissions over the last 30 years can be seen. 
+
+# Merging tables and some statistical tests
+
+
+Let's merge some tables
+
+```{r}
+#first we'll combine our greenhouse gas emissions with mean temperature anomalies ONLY where years overlap 
+ghg_temp_merged <- ghg_emissions_tidy %>%
+  inner_join(mean_temp_anom_tidy, c("year" = "Year"))
+#check out our resulting data frame
+slice_head(ghg_temp_merged, n=24)
+
+```
+
+And visualize the results: 
+
+```{r}
+ghg_temp_merged %>% ggplot(aes(x = MtCO2e_total,
+                               y = Mean, 
+                               color = year)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              se = F, 
+              color = "red",
+              linetype = "dashed") +
+  labs(title = "Mean temp. anomoly by CO2 equivalent Greenhouse Gas Emissions",
+       x = "Megatons CO2 equivalents emitted" ,
+       y = "Mean temp anomoly (Celsius)") + 
+  theme_bw()
+```
+
+We can see that Mean temp anomoly (Celsius) increases as greenhouse gas emissions increases. 
+
+## 2b. 
+
+
+Let's look at the difference between North and South observations for sea ice coverage (by extent). Our null hypothesis is that the means are the same, the alternative hypothesis will be that there is a difference in means. We'll use a One-Way ANOVA.
+
+```{r}
+#let's check out the distribution of these data first
+sea_ice_tidy %>% ggplot(aes(x = region_full, y = extent)) +
+  ggdist::stat_halfeye(adjust = .5, width = 2*.3, .width = c(0.5, 1)) + 
+    geom_boxplot(width = .3, outlier.shape = NA) +
+  ggdist::stat_dots(side = "left", dotsize = 1, justification = 1.05, binwidth = .1,
+                    color = "black") +
+    coord_flip() +
+    labs(y = "Sea ice extent (10^6 km^2)",
+         title = "Extent of area with at least 15% sea ice coverage by region") + 
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+We'll perform a randomization test for to check if there is a difference between N and S region extents. 
+
+```{r}
+#
+myData <- sea_ice_tidy %>% select(region_full, extent)
+
+# Fitting One-Way ANOVA model
+modFit <- aov(extent ~ region_full, data = myData)
+Fstatistic <- modFit %>% tidy() %>% slice_head(n = 1) %>% pull(statistic)
+
+
+# Getting number of each observations in each group
+groupCounts <- myData %>% count(region_full)
+groupCounts
+
+N <- nrow(myData)
+N
+
+#num of permutations 
+nperms <- 1000
+
+# Instantiating vector for test statistics
+permFs <- vector(length = nperms)
+
+
+# Create vector of group memberships of individuals
+groups <- rep(groupCounts$region_full, times = groupCounts$n)
+
+
+for(p in 1:nperms) {
+# Permute individuals keeping group sizes the same as in original data
+permData <- myData %>% mutate(region_full = groups[sample(1:N, size = N, replace = FALSE)])
+
+# Calculate F test statistic for each permutation
+modFit <- aov(extent ~ region_full, data = permData)
+permFs[p] <- modFit %>% tidy() %>% slice_head(n = 1) %>% pull(statistic)
+}
+
+head(permFs)
+```
+
+Now, we'll show the null distribution of the F-statistic for our One-way ANOVA randomization test.
+
+```{r}
+tibble(f = permFs) %>% ggplot(aes(x = f)) +
+  geom_histogram(color = "white") +
+  geom_vline(xintercept = quantile(permFs, probs = 0.950),
+             color = "red", linetype = "dotted")+
+  geom_vline(xintercept = Fstatistic,
+             color = "blue", linetype = "solid") +
+  labs(title = "Randomization null distribution",
+       y = "frequency") +
+  theme_bw()
+```
+
+Our observed F-statistic is the blue line, and the red dotted line marks the 95th percentile.
+
+To find the p-value of the randomization test, we want to know the proportion of randomized F-statistics that are greater than or equal to the observed F-statistic.
+
+```{r}
+randPvalue <- mean(permFs >= Fstatistic)
+randPvalue
+```
+
+Therefore, we fail to reject the null hypothesis. This was expected, as we didn't see any difference in the raincloud plots. We do not have evidence at the 5% significance level that the extent North region differs from South region, on average. 
+
+
+Next, we will obtain a parametric and nonparametric bootstrap-estimated standard error for at least one statistic of interest.
+
+Let's calculate the median year's megatons CO2 equivalent emissions in our dataset ghg_emissions_tidy.
+
+```{r}
+tibble(Value = ghg_emissions_tidy$MtCO2e_total) %>% ggplot(aes(y = Value)) +
+  ggdist::stat_halfeye(adjust = .5, width = 2*.3, .width = c(0.5, 1)) + 
+    geom_boxplot(width = .3, outlier.shape = NA) +
+  ggdist::stat_dots(side = "left", dotsize = 6, justification = 1.05, binwidth = .1,
+                    color = "black") +
+    coord_flip() +
+    labs(title = "observed values of MtCO2e_total") + 
+  theme_bw() +
+  theme(legend.position = "none")
+n <- nrow(ghg_emissions_tidy)
+#sample median: 
+sample_med <- median(ghg_emissions_tidy$MtCO2e_total)
+```
+
+We can see that the data is bimodal and asymmetric. We have a sample size of `r nrow(ghg_emissions_tidy)`
+
+Our sample median is `r sample_med`
+
+Now let's perform a bootstrap
+
+```{r}
+# Number of bootstrap samples
+B <- 10000
+
+# Instantiating matrix for bootstrap samples
+boots <- matrix(NA, nrow = n, ncol = B)
+
+# Sampling with replacement B times
+for(b in 1:B) {
+boots[, b] <- ghg_emissions_tidy$MtCO2e_total[sample(1:n, size = n, replace = TRUE)]
+}
+
+#Using the generated bootstrap samples, let's create a bootstrap distribution of sample medians, and visualize this distribution using a histogram.
+
+# Instantiating vector for bootstrap medians
+bootMedians <- vector(length = B)
+
+# Calculating the median for each of the B resamples
+for(b in 1:B) {
+bootMedians[b] <- median(boots[,b])
+}
+
+#visualizing bootMedians:
+tibble(Median = bootMedians) %>% ggplot(aes(x = Median)) +
+  geom_histogram(color = "white") +
+  labs(title = "Distribution of non-parametric bootstrap medians",
+       y = "frequency") +
+  theme_bw()
+# Using the bootstrap samples to obtain a nonparametric estimate of the standard error of the sample median. 
+SEestimate <- sd(bootMedians)
+
+
+#Next, we'll use the bootstrap samples to obtain a nonparametric 95% confidence interval for the population median.
+lowerBoundMed <- quantile(bootMedians, probs = 0.025)
+  
+upperBoundMed <- quantile(bootMedians, probs = 0.975)
+```
+
+Our non-parametric bootstrap-estimated standard error for the median year in MtCO2e_total (total CO2 equivalent emissions in megatons) is `r SEestimate`
+
+ We are 95% confident that the true median is between `r round(lowerBoundMed, 2)` and `r round(upperBoundMed, 2)`.
+
+Now for our parametric bootstrap-estimated SE... 
+
+```{r}
+#we'll assume a normal distribution for the sake of the parametric bootstrap estimate. Using 10000 samples again
+B <- 10000
+
+# Instantiating matrix for bootstrap samples
+paramBoots <- matrix(NA, nrow = n, ncol = B)
+Xbar <- mean(ghg_emissions_tidy$MtCO2e_total)
+s <- sd(ghg_emissions_tidy$MtCO2e_total)
+
+# Simulating a normal set of n values, B times
+for(b in 1:B) {
+paramBoots[, b] <- rnorm(n = n, mean = Xbar, sd = s)
+}
+
+# Instantiating vector for bootstrap medians
+bootParamMedians <- vector(length = B)
+
+# Next we calculate the median for each simulated data set
+for(b in 1:B) {
+bootParamMedians[b] <- median(paramBoots[,b])
+}
+
+#visualizing our distribution iwth a histogram
+tibble(Median = bootParamMedians) %>% ggplot(aes(x = Median)) +
+  geom_histogram(color = "white") +
+  labs(title = "Distribution of parametric bootstrap medians",
+       y = "frequency") +
+  theme_bw()
+
+#We find a parametric bootstrap estimate of the standard error of the sample median.
+SEparamEstimate <- sd(bootParamMedians)
+
+
+#Use the bootstrap samples to obtain a parametric 95% confidence interval for the sample median.
+lowerBoundParaMed <- quantile(bootParamMedians, probs = 0.025)
+  
+upperBoundParaMed <- quantile(bootParamMedians, probs = 0.975)
+
+```
+
+Our parametric bootstrap-estimated standard error for the median year in MtCO2e_total (total CO2 equivalent emissions in megatons) is `r SEparamEstimate`
+
+ We are 95% confident that the true median is between `r round(lowerBoundParaMed, 2)` and `r round(upperBoundParaMed, 2)`.
+
+
+# Next, to create a data dictionary showcasing the variables used in our analyses.
+
+
+```{r}
+# Creating data dictionary for ghg_emissions_tidy
+dataDictionary_ghg <- tibble(Variable = colnames(ghg_emissions_tidy),
+                         Description = c("Year","CO2 equivalent emissions emitted (megatons)"),
+                         Type = map_chr(ghg_emissions_tidy, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(ghg_emissions_tidy, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+# Printing nicely in R Markdown 
+flextable::flextable(dataDictionary_ghg, cwidth = 2)
+
+```
+
+```{r}
+# Creating data dictionary for sea_level_mean
+dataDictionary_sea_level <- tibble(Variable = colnames(sea_level_mean),
+                         Description = c("Year,month,day","Global mean sea level rise (mm)"),
+                         Type = map_chr(sea_level_mean, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(sea_level_mean, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+# Printing nicely in R Markdown 
+flextable::flextable(dataDictionary_sea_level, cwidth = 2)
+
+```
+
+```{r}
+# Creating data dictionary for sea_ice_tidy
+dataDictionary_sea_ice <- tibble(Variable = colnames(sea_ice_tidy),
+                         Description = c("Year","month","Technology used for measurement", "area 15% or more covered by sea ice (10^6 km^2)","area 100% covered by sea ice (10^6 km^2)","Region observed"),
+                         Type = map_chr(sea_ice_tidy, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(sea_ice_tidy, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+# Printing nicely in R Markdown 
+flextable::flextable(dataDictionary_sea_ice, cwidth = 2)
+
+```
+
+```{r}
+# Creating data dictionary for mean_temp_anom_tidy
+dataDictionary_mean_temp <- tibble(Variable = colnames(mean_temp_anom_tidy),
+                         Description = c("Technology used for observation","Year of observation","Average global mean temperature anomalies in degrees Celsius relative to GCIS base period (1951-1980)"),
+                         Type = map_chr(mean_temp_anom_tidy, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(mean_temp_anom_tidy, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+# Printing nicely in R Markdown 
+flextable::flextable(dataDictionary_mean_temp, cwidth = 2)
+
+```
+
+```{r}
+# Creating data dictionary for CO2_annual_mean
+dataDictionary_CO2_mean <- tibble(Variable = colnames(CO2_annual_mean),
+                         Description = c("Year-Month-Day of observation","Global mean CO2 dry air mole fraction defined as the num of molecules CO2/num all molecules in air WITHOUT WATER VAPOR. (expressed as ppm so .000400 = 400ppm).","Statistical uncertainty of measurement","Year of observation only"),
+                         Type = map_chr(CO2_annual_mean, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(CO2_annual_mean, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+# Printing nicely in R Markdown 
+flextable::flextable(dataDictionary_CO2_mean, cwidth = 2)
+
+```
+
+
+
+
+
+
+
+
+
